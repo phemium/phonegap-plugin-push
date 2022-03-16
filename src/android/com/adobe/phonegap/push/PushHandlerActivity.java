@@ -5,9 +5,12 @@ import android.app.NotificationManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.os.Build;
 import android.os.Bundle;
-import android.util.Log;
-import android.support.v4.app.RemoteInput;
+import android.view.WindowManager;
+
+import org.apache.cordova.LOG;
+import androidx.core.app.RemoteInput;
 
 
 public class PushHandlerActivity extends Activity implements PushConstants {
@@ -21,21 +24,29 @@ public class PushHandlerActivity extends Activity implements PushConstants {
      */
     @Override
     public void onCreate(Bundle savedInstanceState) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(true);
+            setTurnScreenOn(true);
+        } else {
+            getWindow().addFlags(
+                    WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED | WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+            );
+        }
         FCMService gcm = new FCMService();
 
         Intent intent = getIntent();
 
         int notId = intent.getExtras().getInt(NOT_ID, 0);
-        Log.d(LOG_TAG, "not id = " + notId);
+        LOG.d(LOG_TAG, "not id = " + notId);
         gcm.setNotification(notId, "");
         super.onCreate(savedInstanceState);
-        Log.v(LOG_TAG, "onCreate");
+        LOG.v(LOG_TAG, "onCreate");
         String callback = getIntent().getExtras().getString("callback");
-        Log.d(LOG_TAG, "callback = " + callback);
+        LOG.d(LOG_TAG, "callback = " + callback);
         boolean foreground = getIntent().getExtras().getBoolean("foreground", true);
         boolean startOnBackground = getIntent().getExtras().getBoolean(START_IN_BACKGROUND, false);
         boolean dismissed = getIntent().getExtras().getBoolean(DISMISSED, false);
-        Log.d(LOG_TAG, "dismissed = " + dismissed);
+        LOG.d(LOG_TAG, "dismissed = " + dismissed);
 
         if(!startOnBackground){
             NotificationManager notificationManager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
@@ -45,24 +56,24 @@ public class PushHandlerActivity extends Activity implements PushConstants {
         boolean isPushPluginActive = PushPlugin.isActive();
         boolean inline = processPushBundle(isPushPluginActive, intent);
 
-        if(inline && android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.N && !startOnBackground){
+        if(inline && Build.VERSION.SDK_INT < Build.VERSION_CODES.N && !startOnBackground){
             foreground = true;
         }
 
-        Log.d(LOG_TAG, "bringToForeground = " + foreground);
+        LOG.d(LOG_TAG, "bringToForeground = " + foreground);
 
         finish();
 
         if(!dismissed) {
-            Log.d(LOG_TAG, "isPushPluginActive = " + isPushPluginActive);
+            LOG.d(LOG_TAG, "isPushPluginActive = " + isPushPluginActive);
             if (!isPushPluginActive && foreground && inline) {
-                Log.d(LOG_TAG, "forceMainActivityReload");
+                LOG.d(LOG_TAG, "forceMainActivityReload");
                 forceMainActivityReload(false);
             } else if(startOnBackground) {
-                Log.d(LOG_TAG, "startOnBackgroundTrue");
+                LOG.d(LOG_TAG, "startOnBackgroundTrue");
                 forceMainActivityReload(true);
             } else {
-                Log.d(LOG_TAG, "don't want main activity");
+                LOG.d(LOG_TAG, "don't want main activity");
             }
         }
     }
@@ -87,7 +98,7 @@ public class PushHandlerActivity extends Activity implements PushConstants {
             remoteInput = RemoteInput.getResultsFromIntent(intent);
             if (remoteInput != null) {
                 String inputString = remoteInput.getCharSequence(INLINE_REPLY).toString();
-                Log.d(LOG_TAG, "response: " + inputString);
+                LOG.d(LOG_TAG, "response: " + inputString);
                 originalExtras.putString(INLINE_REPLY, inputString);
             }
 

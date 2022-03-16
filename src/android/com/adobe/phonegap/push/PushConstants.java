@@ -88,7 +88,7 @@ public interface PushConstants {
   public static final String GOOGLE_APP_ID = "google_app_id";
   public static final String GCM_DEFAULT_SENDER_ID = "gcm_defaultSenderId";
   public static final String PUSH_DISMISSED = "push_dismissed";
-  public static final String DEFAULT_CHANNEL_ID = "PushPluginChannel";
+  public static final String DEFAULT_CHANNEL_ID = "FirebaseMessages";
   public static final String CHANNELS = "channels";
   public static final String CHANNEL_ID = "id";
   public static final String CHANNEL_DESCRIPTION = "description";
@@ -101,5 +101,7 @@ public interface PushConstants {
   public static final String DELETE_CHANNEL = "deleteChannel";
   public static final String ONGOING = "ongoing";
   public static final String LIST_CHANNELS = "listChannels";
+  public static final String GET_LOCKSCREEN_VISIBILITY = "getLockscreenVisibility";
+  public static final String ENABLE_LOCKSCREEN_INTENT = "enableLockscreenIntent";
   public static final String CLEAR_NOTIFICATION = "clearNotification";
 }
