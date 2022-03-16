@@ -3,7 +3,7 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.os.Bundle;
-import android.util.Log;
+import org.apache.cordova.LOG;
 
 public class PushDismissedHandler extends BroadcastReceiver implements PushConstants {
     private static String LOG_TAG = "Push_DismissedHandler";
@@ -16,8 +16,8 @@ public class PushDismissedHandler extends BroadcastReceiver implements PushConst
         int notID = intent.getIntExtra(NOT_ID, 0);
 
         if (action.equals(PUSH_DISMISSED)) {
-            Log.d(LOG_TAG, "PushDismissedHandler = " + extras);
-            Log.d(LOG_TAG, "not id = " + notID);
+            LOG.d(LOG_TAG, "PushDismissedHandler = " + extras);
+            LOG.d(LOG_TAG, "not id = " + notID);
 
             fcm.setNotification(notID, "");
         }

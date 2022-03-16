@@ -335,6 +335,14 @@ module.exports = {
     exec(successCallback, errorCallback, 'PushNotification', 'listChannels', []);
   },
 
+  getLockscreenVisibility: (successCallback, errorCallback) => {
+    exec(successCallback, errorCallback, 'PushNotification', 'getLockscreenVisibility', []);
+  },
+
+  enableLockscreenIntent: (successCallback, errorCallback) => {
+    exec(successCallback, errorCallback, 'PushNotification', 'enableLockscreenIntent', []);
+  },
+
   /**
    * PushNotification Object.
    *

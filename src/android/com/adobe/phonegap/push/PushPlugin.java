@@ -2,19 +2,26 @@ package com.adobe.phonegap.push;
 
 import android.annotation.TargetApi;
 import android.app.Activity;
+import android.app.ActivityManager;
+import android.app.Application;
 import android.app.NotificationChannel;
+import android.app.NotificationChannelGroup;
 import android.app.NotificationManager;
 import android.content.ContentResolver;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.content.res.Resources;
+import android.content.Intent;
+import android.provider.Settings;
 import android.media.AudioAttributes;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
-import android.support.v4.app.NotificationCompat;
-import android.support.v4.app.NotificationManagerCompat;
-import android.util.Log;
+
+import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.app.NotificationCompat;
+import androidx.core.app.NotificationManagerCompat;
+import org.apache.cordova.LOG;
 
 import com.google.firebase.iid.FirebaseInstanceId;
 import com.google.firebase.messaging.FirebaseMessaging;
@@ -30,6 +37,7 @@ import org.json.JSONObject;
 
 import java.io.IOException;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.ArrayList;
@@ -41,10 +49,16 @@ public class PushPlugin extends CordovaPlugin implements PushConstants {
 
   public static final String LOG_TAG = "Push_Plugin";
 
-  private static CallbackContext pushContext;
+  private final MyActivityLifecycleCallbacks mCallbacks = new MyActivityLifecycleCallbacks();
+
+  /**
+   * Contains all the callback contexts for each Activity used by the application
+   */
+  private static HashMap<String, ArrayList<CallbackContext>> callbackContextsMap = new HashMap<String, ArrayList<CallbackContext>>();
+
+  private static AppCompatActivity currentActivity;
   private static CordovaWebView gWebView;
   private static List<Bundle> gCachedExtras = Collections.synchronizedList(new ArrayList<Bundle>());
-  private static boolean gForeground = false;
 
   private static String registration_id = "";
 
@@ -76,6 +90,48 @@ public class PushPlugin extends CordovaPlugin implements PushConstants {
   }
 
   @TargetApi(26)
+  private int getLockscreenVisibility() {
+    // only call on Android O and above
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+      LOG.d(LOG_TAG, "Getting lockscreen visibility...");
+      final NotificationManager notificationManager = (NotificationManager) cordova.getActivity()
+              .getSystemService(Context.NOTIFICATION_SERVICE);
+      List<NotificationChannel> notificationChannels = notificationManager.getNotificationChannels();
+      if (notificationChannels.size() > 0) {
+        int visibility = notificationChannels.get(0).getLockscreenVisibility();
+        LOG.d(LOG_TAG, "Lockscreen visibility: " + visibility);
+        return visibility;
+      } else {
+        LOG.e(LOG_TAG, "No channels found");
+        return -2;
+      }
+    } else {
+      LOG.e(LOG_TAG, "Incompatible Android version found");
+      return -3;
+    }
+  }
+
+  @TargetApi(26)
+  private void enableLockscreenIntent() {
+    // only call on Android O and above
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+      LOG.d(LOG_TAG, "enableLockscreenIntent");
+      final NotificationManager notificationManager = (NotificationManager) cordova.getActivity()
+              .getSystemService(Context.NOTIFICATION_SERVICE);
+      List<NotificationChannel> notificationChannels = notificationManager.getNotificationChannels();
+      if (notificationChannels.size() > 0) {
+        String channelId = notificationChannels.get(0).getId();
+        LOG.d(LOG_TAG, "Creating display of notification channel settings for channel: " + channelId);
+        Intent intent = new Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)
+                .putExtra(Settings.EXTRA_APP_PACKAGE, getApplicationContext().getPackageName())
+                .putExtra(Settings.EXTRA_CHANNEL_ID, channelId);
+        LOG.d(LOG_TAG, "Starting intent...");
+        getApplicationContext().startActivity(intent);
+      }
+    }
+  }
+
+  @TargetApi(26)
   private void deleteChannel(String channelId) {
     // only call on Android O and above
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -89,13 +145,26 @@ public class PushPlugin extends CordovaPlugin implements PushConstants {
   private void createChannel(JSONObject channel) throws JSONException {
     // only call on Android O and above
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+      LOG.d(LOG_TAG, "Creating channel with name: " + channel.get(CHANNEL_DESCRIPTION));
       final NotificationManager notificationManager = (NotificationManager) cordova.getActivity()
           .getSystemService(Context.NOTIFICATION_SERVICE);
 
       String packageName = getApplicationContext().getPackageName();
       NotificationChannel mChannel = new NotificationChannel(channel.getString(CHANNEL_ID),
           channel.optString(CHANNEL_DESCRIPTION, ""),
-          channel.optInt(CHANNEL_IMPORTANCE, NotificationManager.IMPORTANCE_DEFAULT));
+          channel.optInt(CHANNEL_IMPORTANCE, NotificationManager.IMPORTANCE_HIGH));
+
+      try {
+        String CHANNEL_GROUP_NAME = "Messages";
+        LOG.d(LOG_TAG, "Creating channel group with name: " + CHANNEL_GROUP_NAME);
+        NotificationChannelGroup mChannelGroup = new NotificationChannelGroup("MessagesGroup", CHANNEL_GROUP_NAME);
+        notificationManager.createNotificationChannelGroup(mChannelGroup);
+        LOG.d(LOG_TAG, "Assigning channel " + CHANNEL_DESCRIPTION + " to group " + CHANNEL_GROUP_NAME);
+        mChannel.setGroup(mChannelGroup.getId());
+        LOG.d(LOG_TAG, "Setting color");
+      } catch (Exception e) {
+        LOG.e(LOG_TAG, e.getMessage());
+      }
 
       int lightColor = channel.optInt(CHANNEL_LIGHT_COLOR, -1);
       if (lightColor != -1) {
@@ -139,7 +208,7 @@ public class PushPlugin extends CordovaPlugin implements PushConstants {
         boolean vibrate = channel.optBoolean(CHANNEL_VIBRATION, true);
         mChannel.enableVibration(vibrate);
       }
-
+      mChannel.enableLights(true);
       notificationManager.createNotificationChannel(mChannel);
     }
   }
@@ -151,38 +220,70 @@ public class PushPlugin extends CordovaPlugin implements PushConstants {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
       final NotificationManager notificationManager = (NotificationManager) cordova.getActivity()
           .getSystemService(Context.NOTIFICATION_SERVICE);
+
+      LOG.d(LOG_TAG, "Deleting all previous channels...");
       List<NotificationChannel> channels = notificationManager.getNotificationChannels();
+      LOG.d(LOG_TAG, channels.size() + " channels");
 
       for (int i = 0; i < channels.size(); i++) {
-        id = channels.get(i).getId();
-        if (id.equals(DEFAULT_CHANNEL_ID)) {
-          return;
-        }
+        LOG.d(LOG_TAG, "Deleting channel: " + channels.get(i).getName());
+        deleteChannel(channels.get(i).getId());
+      }
+
+      LOG.d(LOG_TAG, "Deleting all previous channel groups...");
+      List<NotificationChannelGroup> channelGroups = notificationManager.getNotificationChannelGroups();
+      LOG.d(LOG_TAG, channelGroups.size() + " channel groups");
+
+      for (int i = 0; i < channelGroups.size(); i++) {
+        LOG.d(LOG_TAG, "Deleting channel group: " + channelGroups.get(i).getName());
+        notificationManager.deleteNotificationChannelGroup(channelGroups.get(i).getId());
       }
       try {
         options.put(CHANNEL_ID, DEFAULT_CHANNEL_ID);
-        options.putOpt(CHANNEL_DESCRIPTION, "PhoneGap PushPlugin");
+        options.putOpt(CHANNEL_DESCRIPTION, "FirebaseMessages");
         createChannel(options);
       } catch (JSONException e) {
-        Log.e(LOG_TAG, "execute: Got JSON Exception " + e.getMessage());
+        LOG.e(LOG_TAG, "execute: Got JSON Exception " + e.getMessage());
       }
+    }
+  }
+
+  public static void addCallbackContext(CallbackContext callbackContext) {
+    String activityName = getCurrentActivityName();
+    if (!callbackContextsMap.containsKey(activityName)) {
+      callbackContextsMap.put(activityName, new ArrayList<CallbackContext>());
+    }
+    List<CallbackContext> contexts = callbackContextsMap.get(activityName);
+    int index = 0;
+    int foundCallbackContext = -1;
+    while (contexts.size() > index) {
+      if (contexts.get(index).getCallbackId() == callbackContext.getCallbackId()) {
+        foundCallbackContext = index;
+        break;
+      }
+      index++;
+    }
+    if (foundCallbackContext == -1) {
+      LOG.d(LOG_TAG, "Registering new CallbackContext #" + callbackContext.getCallbackId() + " inside Activity " + activityName);
+      contexts.add(callbackContext);
     }
   }
 
   @Override
   public boolean execute(final String action, final JSONArray data, final CallbackContext callbackContext) {
-    Log.v(LOG_TAG, "execute: action=" + action);
-    gWebView = this.webView;
+    LOG.v(LOG_TAG, "execute: action=" + action);
+    gWebView = webView;
+    currentActivity = cordova.getActivity();
 
     if (INITIALIZE.equals(action)) {
       cordova.getThreadPool().execute(new Runnable() {
         public void run() {
-          pushContext = callbackContext;
+          PushPlugin.addCallbackContext(callbackContext);
           JSONObject jo = null;
 
-          Log.v(LOG_TAG, "execute: data=" + data.toString());
+          LOG.v(LOG_TAG, "execute: data=" + data.toString());
           SharedPreferences sharedPref = getApplicationContext().getSharedPreferences(COM_ADOBE_PHONEGAP_PUSH,
-              Context.MODE_PRIVATE);
+                  Context.MODE_PRIVATE);
           String token = null;
           String senderID = null;
 
@@ -192,23 +293,23 @@ public class PushPlugin extends CordovaPlugin implements PushConstants {
             // If no NotificationChannels exist create the default one
             createDefaultNotificationChannelIfNeeded(jo);
 
-            Log.v(LOG_TAG, "execute: jo=" + jo.toString());
+            LOG.v(LOG_TAG, "execute: jo=" + jo.toString());
 
             senderID = getStringResourceByName(GCM_DEFAULT_SENDER_ID);
 
-            Log.v(LOG_TAG, "execute: senderID=" + senderID);
+            LOG.v(LOG_TAG, "execute: senderID=" + senderID);
 
             try {
               token = FirebaseInstanceId.getInstance().getToken();
             } catch (IllegalStateException e) {
-              Log.e(LOG_TAG, "Exception raised while getting Firebase token " + e.getMessage());
+              LOG.e(LOG_TAG, "Exception raised while getting Firebase token " + e.getMessage());
             }
 
             if (token == null) {
               try {
                 token = FirebaseInstanceId.getInstance().getToken(senderID, FCM);
               } catch (IllegalStateException e) {
-                Log.e(LOG_TAG, "Exception raised while getting Firebase token " + e.getMessage());
+                LOG.e(LOG_TAG, "Exception raised while getting Firebase token " + e.getMessage());
               }
             }
 
@@ -216,7 +317,7 @@ public class PushPlugin extends CordovaPlugin implements PushConstants {
               JSONObject json = new JSONObject().put(REGISTRATION_ID, token);
               json.put(REGISTRATION_TYPE, FCM);
 
-              Log.v(LOG_TAG, "onRegistered: " + json.toString());
+              LOG.v(LOG_TAG, "onRegistered: " + json.toString());
 
               JSONArray topics = jo.optJSONArray(TOPICS);
               subscribeToTopics(topics, registration_id);
@@ -227,14 +328,14 @@ public class PushPlugin extends CordovaPlugin implements PushConstants {
               return;
             }
           } catch (JSONException e) {
-            Log.e(LOG_TAG, "execute: Got JSON Exception " + e.getMessage());
+            LOG.e(LOG_TAG, "execute: Got JSON Exception " + e.getMessage());
             callbackContext.error(e.getMessage());
           } catch (IOException e) {
-            Log.e(LOG_TAG, "execute: Got IO Exception " + e.getMessage());
+            LOG.e(LOG_TAG, "execute: Got IO Exception " + e.getMessage());
             callbackContext.error(e.getMessage());
           } catch (Resources.NotFoundException e) {
 
-            Log.e(LOG_TAG, "execute: Got Resources NotFoundException " + e.getMessage());
+            LOG.e(LOG_TAG, "execute: Got Resources NotFoundException " + e.getMessage());
             callbackContext.error(e.getMessage());
           }
 
@@ -243,12 +344,12 @@ public class PushPlugin extends CordovaPlugin implements PushConstants {
             try {
               editor.putString(ICON, jo.getString(ICON));
             } catch (JSONException e) {
-              Log.d(LOG_TAG, "no icon option");
+              LOG.d(LOG_TAG, "no icon option");
             }
             try {
               editor.putString(ICON_COLOR, jo.getString(ICON_COLOR));
             } catch (JSONException e) {
-              Log.d(LOG_TAG, "no iconColor option");
+              LOG.d(LOG_TAG, "no iconColor option");
             }
 
             boolean clearBadge = jo.optBoolean(CLEAR_BADGE, false);
@@ -269,7 +370,7 @@ public class PushPlugin extends CordovaPlugin implements PushConstants {
           }
 
           if (!gCachedExtras.isEmpty()) {
-            Log.v(LOG_TAG, "sending cached extras");
+            LOG.v(LOG_TAG, "sending cached extras");
             synchronized (gCachedExtras) {
               Iterator<Bundle> gCachedExtrasIterator = gCachedExtras.iterator();
               while (gCachedExtrasIterator.hasNext()) {
@@ -291,7 +392,7 @@ public class PushPlugin extends CordovaPlugin implements PushConstants {
               unsubscribeFromTopics(topics, registration_id);
             } else {
               FirebaseInstanceId.getInstance().deleteInstanceId();
-              Log.v(LOG_TAG, "UNREGISTER");
+              LOG.v(LOG_TAG, "UNREGISTER");
 
               // Remove shared prefs
               SharedPreferences.Editor editor = sharedPref.edit();
@@ -306,7 +407,7 @@ public class PushPlugin extends CordovaPlugin implements PushConstants {
 
             callbackContext.success();
           } catch (IOException e) {
-            Log.e(LOG_TAG, "execute: Got JSON Exception " + e.getMessage());
+            LOG.e(LOG_TAG, "execute: Got JSON Exception " + e.getMessage());
             callbackContext.error(e.getMessage());
           }
         }
@@ -318,7 +419,7 @@ public class PushPlugin extends CordovaPlugin implements PushConstants {
         public void run() {
           JSONObject jo = new JSONObject();
           try {
-            Log.d(LOG_TAG,
+            LOG.d(LOG_TAG,
                 "has permission: " + NotificationManagerCompat.from(getApplicationContext()).areNotificationsEnabled());
             jo.put("isEnabled", NotificationManagerCompat.from(getApplicationContext()).areNotificationsEnabled());
             PluginResult pluginResult = new PluginResult(PluginResult.Status.OK, jo);
@@ -334,7 +435,7 @@ public class PushPlugin extends CordovaPlugin implements PushConstants {
     } else if (SET_APPLICATION_ICON_BADGE_NUMBER.equals(action)) {
       cordova.getThreadPool().execute(new Runnable() {
         public void run() {
-          Log.v(LOG_TAG, "setApplicationIconBadgeNumber: data=" + data.toString());
+          LOG.v(LOG_TAG, "setApplicationIconBadgeNumber: data=" + data.toString());
           try {
             setApplicationIconBadgeNumber(getApplicationContext(), data.getJSONObject(0).getInt(BADGE));
           } catch (JSONException e) {
@@ -346,14 +447,14 @@ public class PushPlugin extends CordovaPlugin implements PushConstants {
     } else if (GET_APPLICATION_ICON_BADGE_NUMBER.equals(action)) {
       cordova.getThreadPool().execute(new Runnable() {
         public void run() {
-          Log.v(LOG_TAG, "getApplicationIconBadgeNumber");
+          LOG.v(LOG_TAG, "getApplicationIconBadgeNumber");
           callbackContext.success(getApplicationIconBadgeNumber(getApplicationContext()));
         }
       });
     } else if (CLEAR_ALL_NOTIFICATIONS.equals(action)) {
       cordova.getThreadPool().execute(new Runnable() {
         public void run() {
-          Log.v(LOG_TAG, "clearAllNotifications");
+          LOG.v(LOG_TAG, "clearAllNotifications");
           clearAllNotifications();
           callbackContext.success();
         }
@@ -421,12 +522,37 @@ public class PushPlugin extends CordovaPlugin implements PushConstants {
           }
         }
       });
+    } else if (GET_LOCKSCREEN_VISIBILITY.equals(action)) {
+      // un-subscribing for a topic
+      cordova.getThreadPool().execute(new Runnable() {
+        public void run() {
+          try {
+            callbackContext.success(getLockscreenVisibility());
+          } catch (Exception e) {
+            LOG.e(LOG_TAG, e.getMessage());
+            callbackContext.error(e.getMessage());
+          }
+        }
+      });
+    } else if (ENABLE_LOCKSCREEN_INTENT.equals(action)) {
+      // un-subscribing for a topic
+      cordova.getThreadPool().execute(new Runnable() {
+        public void run() {
+          try {
+            enableLockscreenIntent();
+            callbackContext.success();
+          } catch (Exception e) {
+            LOG.e(LOG_TAG, e.getMessage());
+            callbackContext.error(e.getMessage());
+          }
+        }
+      });
     } else if (CLEAR_NOTIFICATION.equals(action)) {
       // clearing a single notification
       cordova.getThreadPool().execute(new Runnable() {
         public void run() {
           try {
-            Log.v(LOG_TAG, "clearNotification");
+            LOG.v(LOG_TAG, "clearNotification");
             int id = data.getInt(0);
             clearNotification(id);
             callbackContext.success();
@@ -436,7 +562,7 @@ public class PushPlugin extends CordovaPlugin implements PushConstants {
         }
       });
     } else {
-      Log.e(LOG_TAG, "Invalid action : " + action);
+      LOG.e(LOG_TAG, "Invalid action : " + action);
       callbackContext.sendPluginResult(new PluginResult(PluginResult.Status.INVALID_ACTION));
       return false;
     }
@@ -445,19 +571,51 @@ public class PushPlugin extends CordovaPlugin implements PushConstants {
   }
 
   public static void sendEvent(JSONObject _json) {
+    try {
+      LOG.d(LOG_TAG, _json.toString(4));
+    } catch (JSONException e) {
+      e.printStackTrace();
+    }
     PluginResult pluginResult = new PluginResult(PluginResult.Status.OK, _json);
     pluginResult.setKeepCallback(true);
-    if (pushContext != null) {
-      pushContext.sendPluginResult(pluginResult);
+    sendPluginResultToCurrentActivity(pluginResult);
+  }
+
+  public static void sendPluginResultToAllActivities(PluginResult pluginResult) {
+    for (String activityName : callbackContextsMap.keySet()) {
+      List<CallbackContext> contexts = callbackContextsMap.get(activityName);
+      int index = 0;
+      while (contexts.size() > index) {
+        CallbackContext callbackContext = contexts.get(index);
+        LOG.d(LOG_TAG, "Sending pluginResult to Activity " + activityName + " and CallbackContext " + callbackContext.getCallbackId());
+        callbackContext.sendPluginResult(pluginResult);
+        index++;
+      }
+    }
+  }
+
+  public static void sendPluginResultToCurrentActivity(PluginResult pluginResult) {
+    String activityName = getCurrentActivityName();
+    LOG.d(LOG_TAG, "Sending event to current activity: " + activityName);
+    List<CallbackContext> contexts = callbackContextsMap.get(activityName);
+    LOG.d(LOG_TAG, "Current activity has " + contexts.size() + " callback contexts");
+    int index = 0;
+    while (contexts.size() > index) {
+      CallbackContext callbackContext = contexts.get(index);
+      LOG.d(LOG_TAG, "Sending pluginResult to activity " + activityName + " and CallbackContext #" + callbackContext.getCallbackId());
+      callbackContext.sendPluginResult(pluginResult);
+      index++;
     }
   }
 
   public static void sendError(String message) {
     PluginResult pluginResult = new PluginResult(PluginResult.Status.ERROR, message);
     pluginResult.setKeepCallback(true);
-    if (pushContext != null) {
-      pushContext.sendPluginResult(pluginResult);
-    }
+    sendPluginResultToCurrentActivity(pluginResult);
+  }
+
+  public static String getCurrentActivityName() {
+    return currentActivity.getClass().getSimpleName();
   }
 
   /*
@@ -471,7 +629,7 @@ public class PushPlugin extends CordovaPlugin implements PushConstants {
       if (gWebView != null) {
         sendEvent(convertBundleToJson(extras));
       } else if (!"1".equals(noCache)) {
-        Log.v(LOG_TAG, "sendExtras: caching extras to send at a later time.");
+        LOG.v(LOG_TAG, "sendExtras: caching extras to send at a later time.");
         gCachedExtras.add(extras);
       }
     }
@@ -503,13 +661,11 @@ public class PushPlugin extends CordovaPlugin implements PushConstants {
   @Override
   public void initialize(CordovaInterface cordova, CordovaWebView webView) {
     super.initialize(cordova, webView);
-    gForeground = true;
   }
 
   @Override
   public void onPause(boolean multitasking) {
     super.onPause(multitasking);
-    gForeground = false;
 
     SharedPreferences prefs = getApplicationContext().getSharedPreferences(COM_ADOBE_PHONEGAP_PUSH,
         Context.MODE_PRIVATE);
@@ -519,16 +675,20 @@ public class PushPlugin extends CordovaPlugin implements PushConstants {
   }
 
   @Override
+  public void pluginInitialize() {
+    cordova.getActivity().getApplication().registerActivityLifecycleCallbacks(mCallbacks);
+    super.pluginInitialize();
+  }
+
+  @Override
   public void onResume(boolean multitasking) {
     super.onResume(multitasking);
-    gForeground = true;
   }
 
   @Override
   public void onDestroy() {
     super.onDestroy();
-    gForeground = false;
-    gWebView = null;
+    cordova.getActivity().getApplication().unregisterActivityLifecycleCallbacks(mCallbacks);
   }
 
   private void clearAllNotifications() {
@@ -557,7 +717,7 @@ public class PushPlugin extends CordovaPlugin implements PushConstants {
 
   private void subscribeToTopic(String topic, String registrationToken) {
     if (topic != null) {
-      Log.d(LOG_TAG, "Subscribing to topic: " + topic);
+      LOG.d(LOG_TAG, "Subscribing to topic: " + topic);
       FirebaseMessaging.getInstance().subscribeToTopic(topic);
     }
   }
@@ -574,7 +734,7 @@ public class PushPlugin extends CordovaPlugin implements PushConstants {
 
   private void unsubscribeFromTopic(String topic, String registrationToken) {
     if (topic != null) {
-      Log.d(LOG_TAG, "Unsubscribing to topic: " + topic);
+      LOG.d(LOG_TAG, "Unsubscribing to topic: " + topic);
       FirebaseMessaging.getInstance().unsubscribeFromTopic(topic);
     }
   }
@@ -583,7 +743,7 @@ public class PushPlugin extends CordovaPlugin implements PushConstants {
    * serializes a bundle to JSON.
    */
   private static JSONObject convertBundleToJson(Bundle extras) {
-    Log.d(LOG_TAG, "convert extras to json");
+    LOG.d(LOG_TAG, "convert extras to json");
     try {
       JSONObject json = new JSONObject();
       JSONObject additionalData = new JSONObject();
@@ -597,7 +757,7 @@ public class PushPlugin extends CordovaPlugin implements PushConstants {
         String key = it.next();
         Object value = extras.get(key);
 
-        Log.d(LOG_TAG, "key = " + key);
+        LOG.d(LOG_TAG, "key = " + key);
 
         if (jsonKeySet.contains(key)) {
           json.put(key, value);
@@ -627,11 +787,11 @@ public class PushPlugin extends CordovaPlugin implements PushConstants {
       } // while
 
       json.put(ADDITIONAL_DATA, additionalData);
-      Log.v(LOG_TAG, "extrasToJSON: " + json.toString());
+      LOG.v(LOG_TAG, "extrasToJSON: " + json.toString());
 
       return json;
     } catch (JSONException e) {
-      Log.e(LOG_TAG, "extrasToJSON: JSON exception");
+      LOG.e(LOG_TAG, "extrasToJSON: JSON exception");
     }
     return null;
   }
@@ -644,6 +804,10 @@ public class PushPlugin extends CordovaPlugin implements PushConstants {
   }
 
   public static boolean isInForeground() {
+    ActivityManager.RunningAppProcessInfo appProcessInfo = new ActivityManager.RunningAppProcessInfo();
+    ActivityManager.getMyMemoryState(appProcessInfo);
+    Boolean gForeground = (appProcessInfo.importance == ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND || appProcessInfo.importance == ActivityManager.RunningAppProcessInfo.IMPORTANCE_VISIBLE);
+    LOG.d(LOG_TAG, "isInForeground: " + gForeground.toString());
     return gForeground;
   }
 
@@ -653,5 +817,56 @@ public class PushPlugin extends CordovaPlugin implements PushConstants {
 
   protected static void setRegistrationID(String token) {
     registration_id = token;
+  }
+
+  public static class MyActivityLifecycleCallbacks implements Application.ActivityLifecycleCallbacks {
+
+    private static String LOG_TAG = "Activities";
+
+    @Override
+    public void onActivityCreated(Activity activity, Bundle savedInstanceState) {
+      String activityName = activity.getClass().getSimpleName();
+      LOG.d(LOG_TAG, "Created activity: " + activityName);
+      if (!callbackContextsMap.containsKey(activityName)) {
+        callbackContextsMap.put(activityName, new ArrayList<CallbackContext>());
+      }
+    }
+
+    @Override
+    public void onActivityStarted(Activity activity) {
+      String activityName = activity.getClass().getSimpleName();
+      LOG.d(LOG_TAG, "Started activity: " + activityName);
+    }
+
+    @Override
+    public void onActivityResumed(Activity activity) {
+      String activityName = activity.getClass().getSimpleName();
+      LOG.d(LOG_TAG, "Resumed activity: " + activityName);
+      PushPlugin.currentActivity = (AppCompatActivity) activity;
+    }
+
+    @Override
+    public void onActivityPaused(Activity activity) {
+      String activityName = activity.getClass().getSimpleName();
+      LOG.d(LOG_TAG, "Paused activity: " + activityName);
+    }
+
+    @Override
+    public void onActivitySaveInstanceState(Activity activity, Bundle outState) { }
+
+    @Override
+    public void onActivityStopped(Activity activity) {
+      String activityName = activity.getClass().getSimpleName();
+      LOG.d(LOG_TAG, "Stopped activity: " + activityName);
+    }
+
+    @Override
+    public void onActivityDestroyed(Activity activity) {
+      String activityName = activity.getClass().getSimpleName();
+      LOG.d(LOG_TAG, "Destroying activity: " + activityName);
+      if (callbackContextsMap.containsKey(activityName)) {
+        callbackContextsMap.remove(activityName);
+      }
+    }
   }
 }

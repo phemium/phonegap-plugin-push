@@ -372,7 +372,12 @@ module.exports = {
   listChannels: function listChannels(successCallback, errorCallback) {
     exec(successCallback, errorCallback, 'PushNotification', 'listChannels', []);
   },
-
+  getLockscreenVisibility: function getLockscreenVisibility(successCallback, errorCallback) {
+    exec(successCallback, errorCallback, 'PushNotification', 'getLockscreenVisibility', []);
+  },
+  enableLockscreenIntent: function enableLockscreenIntent(successCallback, errorCallback) {
+    exec(successCallback, errorCallback, 'PushNotification', 'enableLockscreenIntent', []);
+  },
   /**
    * PushNotification Object.
    *
