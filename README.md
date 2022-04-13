@@ -1,6 +1,8 @@
-# phonegap-plugin-push [![Build Status](https://travis-ci.org/phonegap/phonegap-plugin-push.svg)](https://travis-ci.org/phonegap/phonegap-plugin-push)
+# [DEPRECATED] phonegap-plugin-push [![Build Status](https://travis-ci.org/phonegap/phonegap-plugin-push.svg)](https://travis-ci.org/phonegap/phonegap-plugin-push)
 
 > Register and receive push notifications
+
+> Use @phemium-costaisa/cordova-plugin-push for improved version: https://github.com/phemium/cordova-plugin-push
 
 # Warning
 
