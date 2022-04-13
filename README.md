@@ -2,7 +2,7 @@
 
 > Register and receive push notifications
 
-> Use @phemium-costaisa/cordova-plugin-push for improved version: https://github.com/phemium/cordova-plugin-push
+> Use `@phemium-costaisa/cordova-plugin-push` for improved version: https://github.com/phemium/cordova-plugin-push
 
 # Warning
 
